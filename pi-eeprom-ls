@@ -1,0 +1,19 @@
+#!/usr/bin/python
+import eeprom, sys
+from binascii import hexlify
+
+with open(sys.argv[1], 'rb') as f:
+    image = eeprom.Reader(f)
+
+print('eeprom version: %s, %s (%s)' % (image.version, image.date, image.image_type))
+print('-----------------------------------')
+for chunk in image:
+    print(chunk)
+print('-[ bootconf.txt ]------------------')
+print(image.get('bootconf.txt').get_raw_text())
+print('-[ bootconf.sig ]------------------')
+print(hexlify(image.get('bootconf.sig').get_raw_text()))
+print('-[ pubkey.bin ]--------------------')
+print(hexlify(image.get('pubkey.bin').get_raw_bin()).decode('utf8'))
+
+

@@ -1,0 +1,35 @@
+#!/usr/bin/python
+import sys
+import eeprom
+
+with open(sys.argv[1], 'rb') as f:
+    image = eeprom.Reader(f)
+
+w = image.create_writer()
+
+for chunk in image:
+    if chunk.name in (
+        'bootconf.txt',
+    ):
+        continue # skip
+    w.append(chunk)
+
+w.append(eeprom.ChunkConf.create('bootconf.txt').set_text(u"""
+    [all]
+    BOOT_UART=0
+    WAKE_ON_GPIO=1
+    POWER_OFF_ON_HALT=0
+    MAX_RESTARTS=200
+    ENABLE_SELF_UPDATE=1
+    DISABLE_HDMI=0
+    BOOT_ORDER=0xf1
+"""))
+
+with open(sys.argv[2], "wb") as f:
+    w.write_img(f)
+
+with open(sys.argv[3], 'wb') as f:
+    w.write_sig(f)
+
+with open(sys.argv[4], 'wb') as f:
+    f.write(image.version.encode('utf8'))

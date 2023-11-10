@@ -1,0 +1,16 @@
+#!/usr/bin/python
+import sys
+import eeprom
+
+with open(sys.argv[1], 'rb') as f:
+    image = eeprom.Reader(f)
+
+w = image.create_writer()
+
+for chunk in image:
+    if isinstance(chunk, eeprom.ChunkFile):
+        chunk.set_file(chunk.get_file())
+    w.append(chunk)
+
+with open(sys.argv[2], "wb") as f:
+    w.write_img(f)
