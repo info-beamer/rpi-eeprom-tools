@@ -78,7 +78,6 @@ try:
             raise FormatError("Cannot compress data")
         return bytearray(out[:res]) + SHA256.new(input_data).digest()
 except:
-    raise
     def compress(raw):
         inp = BytesIO(raw)
         out = BytesIO()
