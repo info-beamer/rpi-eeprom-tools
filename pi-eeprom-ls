@@ -5,7 +5,7 @@ from binascii import hexlify
 with open(sys.argv[1], 'rb') as f:
     image = eeprom.Reader(f)
 
-print('eeprom version: %s, %s (%s)' % (image.version, image.date, image.image_type))
+print('eeprom version: %s %s, %s (%s)' % (image.version, image.bootloader_version, image.date, image.image_type))
 print('-----------------------------------')
 for chunk in image:
     print(chunk)

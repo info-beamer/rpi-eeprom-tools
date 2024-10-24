@@ -231,6 +231,13 @@ class Reader(object):
         return m.group(1).decode('utf8')
 
     @property
+    def bootloader_version(self):
+        m = re.search(b"BVER[\x80|\x8c]\0\0\0[\x80|\x8c]\0\0\0([0-9a-f]{40})", self._chunks[''].get_raw_bin()) # eww
+        if m is None:
+            raise FormatError("Cannot find version")
+        return m.group(1).decode('utf8')
+
+    @property
     def date(self):
         m = re.search(b"DATE: ([0-9]{4})/([0-9]{2})/([0-9]{2})", self._chunks[''].get_raw_bin())
         if m is None:
