@@ -282,6 +282,10 @@ class Writer(object):
         self._offset = offset
 
     @property
+    def offset(self):
+        return self._offset
+
+    @property
     def free(self):
         return self._image_size - self._offset
 
