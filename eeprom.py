@@ -1,5 +1,9 @@
 import struct, textwrap, time, re, binascii, datetime
 try:
+    from lz4.frame import decompress as decompress_lz4
+except ImportError:
+    decompress_lz4 = None
+try:
     from cStringIO import StringIO as BytesIO
     to_byte = chr
     struct_bytes = str
@@ -31,7 +35,14 @@ MAGIC_FILL = 0xee0
 class FormatError(Exception):
     pass
 
-def decompress_file(raw):
+def align_up(v, a):
+    return (v + a - 1) & ~(a - 1)
+
+# CK (?) compression/decompression.
+# Fully based on work by Hristo Venev
+# See https://git.venev.name/hristo/rpi-eeprom-compress/
+
+def decompress_ck(raw):
     out = BytesIO()
     outbuf = bytearray(b'\x00' * 256)
     out_i = 0
@@ -65,15 +76,12 @@ def decompress_file(raw):
         raise FormatError("Invalid checksum")
     return out.getvalue()
 
-def align_up(v, a):
-    return (v + a - 1) & ~(a - 1)
-
 try:
     import ctypes, os
     compressor = ctypes.CDLL(os.path.join(os.path.dirname(__file__), 'compress.so'))
     compressor.compress.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
     compressor.compress.restype = ctypes.c_int
-    def compress(input_data):
+    def compress_ck(input_data):
         input_data = bytearray(input_data)
         data = (ctypes.c_uint8 * len(input_data))(*input_data)
         out_len = int(len(input_data) * 1.1) # ??
@@ -83,7 +91,7 @@ try:
             raise FormatError("Cannot compress data")
         return bytearray(out[:res]) + SHA256.new(input_data).digest()
 except:
-    def compress(raw):
+    def compress_ck(raw):
         inp = BytesIO(raw)
         out = BytesIO()
         while 1:
@@ -109,9 +117,10 @@ class Chunk(object):
     @staticmethod
     def get_subclass_for(chunk_type):
         return {
-            ChunkFile.MAGIC: ChunkFile,
             ChunkBoot.MAGIC: ChunkBoot,
             ChunkConf.MAGIC: ChunkConf,
+            ChunkFileCK.MAGIC: ChunkFileCK,
+            ChunkFileLZ4.MAGIC: ChunkFileLZ4
         }[chunk_type]
 
     @property
@@ -136,7 +145,7 @@ class Chunk(object):
         return self.set_raw_bin(raw_text.encode('utf8'))
 
     def __repr__(self):
-        return '<%s: %-16s %6d @ 0x%08x / %6d>' % (
+        return '<%-12s: %-16s %6d @ 0x%08x / %6d>' % (
             type(self).__name__, self.name or '<bootsys>',
             len(self._raw), self._original_offset, self._original_offset,
         )
@@ -145,14 +154,33 @@ class ChunkBoot(Chunk):
     MAGIC = 0x0
 
 class ChunkFile(Chunk):
+    pass
+
+class ChunkFileCK(ChunkFile):
     MAGIC = 0x330
 
     def get_file(self):
-        return decompress_file(self._raw)
+        return decompress_ck(self._raw)
 
     def set_file(self, data):
-        compressed = compress(data)
+        compressed = compress_ck(data)
         self.set_raw_bin(compressed)
+
+class ChunkFileLZ4(ChunkFile):
+    MAGIC = 0x440
+
+    def get_file(self):
+        if decompress_lz4 is None:
+            raise FormatError("No LZ4 decompressor available")
+        raw = bytes(self._raw)
+        data, chk = raw[:-32], raw[-32:]
+        decompressed = decompress_lz4(data)
+        if SHA256.new(decompressed).digest() != chk:
+            raise FormatError("Invalid checksum")
+        return decompressed
+
+    def set_file(self, data):
+        raise NotImplementedError("LZ4 compression not implemented")
 
 class ChunkConf(Chunk):
     MAGIC = 0x110
