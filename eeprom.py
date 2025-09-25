@@ -15,9 +15,11 @@ from Crypto.Signature import PKCS1_v1_5
 IMAGE_TYPES = {
     'pi4': {
         'image_size': 512 * 1024,
+        'reserved': 4096,
     },
     'pi5': {
         'image_size': 2048 * 1024,
+        'reserved': 4096,
     },
 }
 
@@ -60,8 +62,11 @@ def decompress_file(raw):
     except StopIteration:
         pass
     if h.digest() != checksum:
-        raise FormatError("invalid checksum")
+        raise FormatError("Invalid checksum")
     return out.getvalue()
+
+def align_up(v, a):
+    return (v + a - 1) & ~(a - 1)
 
 try:
     import ctypes, os
@@ -195,6 +200,10 @@ class Reader(object):
     def image_size(self):
         return IMAGE_TYPES[self._type]['image_size']
 
+    @property
+    def reserved(self):
+        return IMAGE_TYPES[self._type]['reserved']
+
     def _parse_chunks(self, source):
         raw = bytearray(source.read())
         for type, type_info in IMAGE_TYPES.items():
@@ -218,10 +227,9 @@ class Reader(object):
                     magic & ~MAGIC_MASK,
                     offset, raw[file_offset:file_offset+length-12-4],
                 )
-            if chunk_type == MAGIC_FILL:
-                pass
-            offset += 8 + length # length + type
-            offset = (offset + 7) & ~7
+            offset = align_up(offset + 8 + length, 8)
+        if self.version != self.bootloader_version[:8]:
+            raise FormatError('Mismatch in version numbers')
 
     @property
     def version(self):
@@ -234,7 +242,7 @@ class Reader(object):
     def bootloader_version(self):
         m = re.search(b"BVER[\x80|\x8c]\0\0\0[\x80|\x8c]\0\0\0([0-9a-f]{40})", self._chunks[''].get_raw_bin()) # eww
         if m is None:
-            raise FormatError("Cannot find version")
+            raise FormatError("Cannot find bootloader version")
         return m.group(1).decode('utf8')
 
     @property
@@ -252,26 +260,28 @@ class Reader(object):
             yield chunk
 
     def create_writer(self):
-        return Writer(self.image_size)
+        return Writer(self.image_size, self.reserved)
 
 
 class Writer(object):
-    def __init__(self, image_size):
+    def __init__(self, image_size, reserved):
         self._offset = 0
         self._image_size = image_size
+        self._reserved = reserved
         self._image = bytearray(b'\xff' * self._image_size)
 
     def append(self, chunk):
         raw = chunk.get_raw_bin()
-        struct.pack_into(">LL12sL%ds" % len(raw), self._image, self._offset,
+        self._offset, offset = align_up(self._offset + chunk.image_size, 8), self._offset
+        if self.free < 0:
+            raise FormatError("Not space left: Exceeded available space by {} bytes".format(-self.free))
+        struct.pack_into(">LL12sL%ds" % len(raw), self._image, offset,
             MAGIC_BITS | chunk._chunk_type,
             len(raw) + 12+4,
             chunk._name.encode('utf8'),
             0,
             struct_bytes(raw),
         )
-        next_offset = self._offset + chunk.image_size
-        self._offset = (next_offset + 7) & ~7
 
     def fill_until(self, offset):
         struct.pack_into(">LL", self._image, self._offset,
@@ -281,13 +291,16 @@ class Writer(object):
         assert offset % 8 == 0
         self._offset = offset
 
+    def fill(self, size):
+        self.fill_until(self._offset + size)
+
     @property
     def offset(self):
         return self._offset
 
     @property
     def free(self):
-        return self._image_size - self._offset
+        return self._image_size - self._reserved - self._offset
 
     @property
     def img(self):

@@ -12,7 +12,7 @@ for chunk in image:
 print('-[ bootconf.txt ]------------------')
 print(image.get('bootconf.txt').get_raw_text())
 print('-[ bootconf.sig ]------------------')
-print(hexlify(image.get('bootconf.sig').get_raw_text()))
+print(hexlify(image.get('bootconf.sig').get_raw_bin()).decode('utf8'))
 print('-[ pubkey.bin ]--------------------')
 print(hexlify(image.get('pubkey.bin').get_raw_bin()).decode('utf8'))
 
