@@ -268,7 +268,7 @@ class Reader(object):
 
     @property
     def bootloader_version(self):
-        m = re.search(b"BVER[\x80|\x8c]\0\0\0[\x80|\x8c]\0\0\0([0-9a-f]{40})", self._chunks[''].get_raw_bin()) # eww
+        m = re.search(b"BVER[\x80|\x8c|\x9c]\0\0\0[\x80|\x8c|\x9c]\0\0\0([0-9a-f]{40})", self._chunks[''].get_raw_bin()) # eww
         if m is None:
             raise FormatError("Cannot find bootloader version")
         return m.group(1).decode('utf8')
