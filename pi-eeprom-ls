@@ -15,5 +15,3 @@ print('-[ bootconf.sig ]------------------')
 print(hexlify(image.get('bootconf.sig').get_raw_bin()).decode('utf8'))
 print('-[ pubkey.bin ]--------------------')
 print(hexlify(image.get('pubkey.bin').get_raw_bin()).decode('utf8'))
-
-

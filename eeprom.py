@@ -1,5 +1,4 @@
 import struct, textwrap, time, re, binascii, datetime
-from itertools import count
 from collections import namedtuple
 try:
     from lz4.frame import decompress as decompress_lz4
@@ -52,16 +51,23 @@ IMAGE_TYPES = {
     },
     'pi5': {
         'image_size': 2048 * KB,
-        'reserved': 4096,
+        'reserved': 4096 * 2,
         'partitions': Partitions((
             ('readonly',  64 * KB),
-            ('a',        988 * KB),
-            ('b',        988 * KB),
+            ('A',        988 * KB),
+            ('B',        988 * KB),
             ('journal1',   4 * KB),
             ('journal2',   4 * KB),
         )),
         'unpartitioned': Partitions((
             ('all',     2048 * KB),
+        )),
+    },
+    'pi5-partition': {
+        'image_size': 988 * KB,
+        'reserved': 0,
+        'partitions': Partitions((
+            ('all',     988 * KB),
         )),
     },
 }
@@ -160,6 +166,7 @@ class Chunk(object):
             ChunkFileCK.MAGIC: ChunkFileCK,
             ChunkFileLZ4.MAGIC: ChunkFileLZ4,
             ChunkFill.MAGIC: ChunkFill,
+            ChunkAB.MAGIC: ChunkAB,
         }[chunk_type]
 
     @property
@@ -192,7 +199,7 @@ class Chunk(object):
         return self.set_raw_bin(raw_text.encode('utf8'))
 
     def __repr__(self):
-        return '<%-12s: %-16s %6d @ 0x%08x / %6d %s>' % (
+        return '<%-12s: %-16s %6d @ 0x%08x / %7d %s>' % (
             type(self).__name__, self.name or '<bootcode>',
             len(self._raw), self._original_offset, self._original_offset, self._partition
         )
@@ -232,6 +239,9 @@ class ChunkFileLZ4(ChunkFile):
 class ChunkFill(Chunk):
     MAGIC = 0xEE0
 
+class ChunkAB(Chunk):
+    MAGIC = 0x550
+
 class ChunkConf(Chunk):
     MAGIC = 0x110
 
@@ -268,37 +278,41 @@ class ChunkConf(Chunk):
 
 class Reader(object):
     def __init__(self, source):
-        raw_source = bytearray(source.read())
+        self._image = bytearray(source.read())
 
         for type, type_info in IMAGE_TYPES.items():
-            if len(raw_source) == type_info['image_size']:
+            if len(self._image) == type_info['image_size']:
                 self._type = type
                 break
         else:
             raise FormatError('Unknown EEPROM type')
 
-        # Meh: If we don't peek here, we cannot decide which partition layout to apply
-        self._ab_capable = raw_source[0x10008:0x10008+7] == b'bootsys'
+        self._ab_capable = any(
+            name == 'bootsys'
+            for name, _, _, _, _ in self._iter_chunks(self._image)
+        )
 
         if self.partitions.size != self.image_size:
             raise FormatError('Misconfigured partition layout')
 
-        self._chunks = OrderedDict()
-        updatetime_chunk = count()
-        for name, chunk_type, offset, raw in self._parse_chunks(raw_source):
-            dict_name = name if name != 'updatetime' else (name, next(updatetime_chunk))
-            self._chunks[dict_name] = Chunk.get_subclass_for(chunk_type)(
-                name, chunk_type, offset, raw, self.partitions.lookup(offset)
-            )
+        self._metadata_chunk = None
+        metadata_chunk_name = 'bootsys' if self._ab_capable else ''
 
-        # self._ab_capable = 'bootsys' in self._chunks
-        self._metadata_chunk = 'bootsys' if self._ab_capable else ''
+        self._chunks = []
+        for name, chunk_type, offset, data_start, data_end in self._iter_chunks(self._image):
+            chunk = Chunk.get_subclass_for(chunk_type)(
+                name, chunk_type, offset, self._image[data_start:data_end], self.partitions.lookup(offset)
+            )
+            self._chunks.append(chunk)
+            if name == metadata_chunk_name:
+                self._metadata_chunk = chunk
+
         if self.version != self.bootloader_version[:8]:
             raise FormatError('Mismatch in version numbers')
 
-    def _parse_chunks(self, raw):
+    def _iter_chunks(self, raw):
         offset = 0
-        while offset < self.image_size:
+        while offset < self.image_size - self.reserved:
             magic, length = struct.unpack_from('>LL', raw, offset)
             if magic == 0 or magic == 0xffffffff:
                 break
@@ -306,13 +320,18 @@ class Reader(object):
                 raise FormatError('EEPROM is corrupted')
             name = raw[offset + 8: offset + 20]
             file_offset = offset + 20 + 4
-            # print(name, offset, offset%4096, length, struct.unpack("<LL", raw[file_offset:file_offset+8]))
+
+            # if name == '948245674e78bfa8d38c96e2'.decode('hex'):
+            #     length = 4096-8
+            #     name = 'ab'
+
+            # print(name, offset, offset%4096, length, struct.unpack("<LL", raw[file_offset:file_offset+8]), raw[file_offset:file_offset+50])
             chunk_type = magic & ~MAGIC_MASK
             if chunk_type != ChunkFill.MAGIC:
                 yield (
                     name.strip(b'\x00\xff').decode('utf8'),
                     magic & ~MAGIC_MASK,
-                    offset, raw[file_offset:file_offset+length-12-4],
+                    offset, file_offset, file_offset+length-12-4,
                 )
             offset = align_up(offset + 8 + length, 8)
 
@@ -332,48 +351,63 @@ class Reader(object):
     def partitions(self):
         return IMAGE_TYPES[self._type]['partitions' if self._ab_capable else 'unpartitioned']
 
+    def partition_img(self, partition):
+        p = self.partitions.get(partition)
+        if p is None:
+            raise KeyError("Partition {} not found".format(partition))
+        return self._image[p.start:p.end]
+
     @property
     def ab_capable(self):
         return self._ab_capable
 
     @property
     def version(self):
-        m = re.search(b"VERSION:([0-9a-f]{8})", self._chunks[self._metadata_chunk].get_raw_bin()) # eww
+        m = re.search(b"VERSION:([0-9a-f]{8})", self._metadata_chunk.get_raw_bin()) # eww
         if m is None:
             raise FormatError("Cannot find version")
         return m.group(1).decode('utf8')
 
     @property
     def bootloader_version(self):
-        m = re.search(b"BVER[\x80|\x8c|\x9c]\0\0\0[\x80|\x8c|\x9c]\0\0\0([0-9a-f]{40})", self._chunks[self._metadata_chunk].get_raw_bin()) # eww
+        m = re.search(b"BVER[\x80|\x8c|\x9c]\0\0\0[\x80|\x8c|\x9c]\0\0\0([0-9a-f]{40})", self._metadata_chunk.get_raw_bin()) # eww
         if m is None:
             raise FormatError("Cannot find bootloader version")
         return m.group(1).decode('utf8')
 
     @property
     def date(self):
-        m = re.search(b"DATE: ([0-9]{4})/([0-9]{2})/([0-9]{2})", self._chunks[self._metadata_chunk].get_raw_bin())
+        m = re.search(b"DATE: ([0-9]{4})/([0-9]{2})/([0-9]{2})", self._metadata_chunk.get_raw_bin())
         if m is None:
             raise FormatError("Cannot find date")
         return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
-    def get(self, name):
-        return self._chunks.get(name)
+    def get(self, chunk_name):
+        for chunk in self._chunks:
+            if chunk.name == chunk_name:
+                return chunk
+        raise KeyError("Chunk {} not found".format(chunk_name))
+
+    def get_all(self, chunk_name):
+        for chunk in self._chunks:
+            if chunk.name == chunk_name:
+                yield chunk
 
     def __iter__(self):
-        for name, chunk in self._chunks.items():
+        for chunk in self._chunks:
             yield chunk
 
     def create_writer(self):
-        return Writer(self.image_size, self.reserved)
+        return Writer(self.image_size, self.reserved, self.partitions)
 
 
 class Writer(object):
-    def __init__(self, image_size, reserved):
+    def __init__(self, image_size, reserved, partitions):
         self._offset = 0
         self._image_size = image_size
         self._reserved = reserved
         self._image = bytearray(b'\xff' * self._image_size)
+        self._partitions = partitions
 
     def append(self, chunk):
         raw = chunk.get_raw_bin()
@@ -425,6 +459,12 @@ class Writer(object):
     def img(self):
         return self._image
 
+    def partition_img(self, partition):
+        p = self._partitions.get(partition)
+        if p is None:
+            raise KeyError("Partition {} not found".format(partition))
+        return self._image[p.start:p.end]
+
     def sig(self, sign_time=None):
         return (textwrap.dedent(u"""
             %(sha256)s
@@ -433,6 +473,9 @@ class Writer(object):
             sha256 = SHA256.new(self._image).hexdigest(),
             ts = time.time() if sign_time is None else sign_time,
         )).encode('utf8')
+
+    def write_partition_img(self, dest, partition):
+        dest.write(self.partition_img(partition))
 
     def write_img(self, dest):
         dest.write(self.img)
