@@ -13,6 +13,21 @@ VC_MAILBOX_ERROR = 0x80000000
 TAG_GET_EEPROM_PACKET = 0x00030096
 TAG_GET_EEPROM_AB_PARAMS = 0x00030099
 
+RPI_EEPROM_AB_ERROR_NO_ERROR           = 0
+RPI_EEPROM_AB_ERROR_FAILED             = 1
+RPI_EEPROM_AB_ERROR_INVALID_PARTITION  = 2
+RPI_EEPROM_AB_ERROR_HASH_MISMATCH      = 3
+RPI_EEPROM_AB_ERROR_BUSY               = 4
+RPI_EEPROM_AB_ERROR_UPDATE             = 5
+RPI_EEPROM_AB_ERROR_UNCOMMITTED        = 6
+RPI_EEPROM_AB_ERROR_INVALID_ARG        = 7
+RPI_EEPROM_AB_ERROR_LENGTH             = 8
+RPI_EEPROM_AB_ERROR_ERASE              = 9
+RPI_EEPROM_AB_ERROR_WRITE              = 10
+RPI_EEPROM_AB_ERROR_ALREADY_COMMITTED  = 11
+RPI_EEPROM_AB_ERROR_SPI_GPIO_ERROR     = 12
+RPI_EEPROM_AB_ERROR_NO_PARTITIONING    = 13
+
 RPI_EEPROM_AB_UPDATE_PACKET_MAX_SIZE = 256*1024
 
 MAGIC_BITS = 0x55aaf00f
@@ -29,6 +44,11 @@ PARTITION_SIZE = 988*1024
 
 def align_up(v, a):
     return (v + a - 1) & ~(a - 1)
+
+class FirmwareError(Exception):
+    def __init__(self, code):
+        self.code = code
+        super(FirmwareError, self).__init__("VC Error %d" % (code,))
 
 class Firmware(object):
     def __init__(self):
@@ -71,7 +91,7 @@ class Firmware(object):
 
         error = struct.unpack_from("<L", msg, 20)[0]
         if error & VC_MAILBOX_ERROR:
-            return RuntimeError("VC Error %d" % (error & ~VC_MAILBOX_ERROR,))
+            raise FirmwareError(error & ~VC_MAILBOX_ERROR)
         
         return self.Params(*struct.unpack_from("<5L", msg, 20))
 
@@ -106,7 +126,7 @@ class Firmware(object):
 
         error = struct.unpack_from("<L", msg, 20)[0]
         if error & VC_MAILBOX_ERROR:
-            raise RuntimeError("VC Error %d" % (error & ~VC_MAILBOX_ERROR,))
+            raise FirmwareError(error & ~VC_MAILBOX_ERROR)
 
         data_offset = 28
         return msg[data_offset:data_offset + size].tostring()
@@ -153,11 +173,17 @@ if __name__ == "__main__":
     else:
         f = Firmware()
 
-    p = f.params()
+    try:
+        p = f.params()
+        offset = PARTITION_OFFSET + (
+            0 if p.partition_at_boot == PARTITION_A else PARTITION_SIZE
+        )
+    except FirmwareError as err:
+        if err.code == RPI_EEPROM_AB_ERROR_NO_PARTITIONING:
+            offset = 0
+        else:
+            raise
 
-    offset = PARTITION_OFFSET + (
-        0 if p.partition_at_boot == PARTITION_A else PARTITION_SIZE
-    )
     size = PARTITION_SIZE
 
     chunks = dict(f.iter_chunks(offset, offset+size))
