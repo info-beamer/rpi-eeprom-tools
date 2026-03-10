@@ -62,6 +62,7 @@ class Firmware(object):
                 # }
             # 5 x uint32_t
             # end_tag - already zero due to initialization
+            # }
         )
 
         rc = self._mbox_property(msg)
@@ -105,7 +106,7 @@ class Firmware(object):
 
         error = struct.unpack_from("<L", msg, 20)[0]
         if error & VC_MAILBOX_ERROR:
-            return RuntimeError("VC Error %d" % (error & ~VC_MAILBOX_ERROR,))
+            raise RuntimeError("VC Error %d" % (error & ~VC_MAILBOX_ERROR,))
 
         data_offset = 28
         return msg[data_offset:data_offset + size].tostring()
